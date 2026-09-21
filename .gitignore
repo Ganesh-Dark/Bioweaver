@@ -1,0 +1,8 @@
+.env
+backup/
+Futile/
+sep-futile/
+__pycache__/
+Clinvar_files/
+.python-version
+.venv/

@@ -1,0 +1,28 @@
+[project]
+name = "bioweaver-agent"
+version = "0.1.0"
+description = "Bioweaver: An intelligent, ReAct-powered biomedical agent that dynamically connects NCBI, KEGG, Reactome, ClinVar, and PubTator databases."
+readme = "README.md"
+authors = [
+    { name = "Ganesh-sys-git", email = "sankarganesh16021999@gmail.com" }
+]
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "duckdb>=1.5.5",
+    "fastapi>=0.141.1",
+    "langchain-core>=1.5.3",
+    "langchain-google-genai>=4.3.2",
+    "langgraph>=1.2.10",
+    "pandas>=3.0.5",
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.2",
+    "streamlit>=1.64.0",
+    "uvicorn>=0.53.0",
+]
+
+[project.scripts]
+bioweaver-agent = "bioweaver_agent:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
