@@ -68,6 +68,13 @@ def search_reactome_pathway_id(pathway_name):
         candidates.sort(key=score_candidate)
         
         best = candidates[0]
+        best_score = score_candidate(best)
+        
+        # Prevent hallucinated matches: if the score is too high (terrible match), safely reject it
+        if best_score > 90:
+            print(f"No sufficiently close Reactome pathway found for: '{pathway_name}'. (Closest was '{best['name']}' but it failed the similarity threshold).")
+            return None
+            
         print(f"Found Reactome pathway: {best['name']} ({best['id']})")
         return best['id']
     except Exception as e:

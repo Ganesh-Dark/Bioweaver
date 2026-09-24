@@ -10,6 +10,7 @@ Bioweaver is equipped with tools to query specific biological domains:
 *   **Clinical Variants (ClinVar):** Uses a local DuckDB engine to rapidly search the massive ClinVar database for known pathogenic mutations associated with specific genes.
 *   **Advanced Literature NLP (PubTator3):** Integrates with the official NCBI PubTator3 API to scan the latest PubMed literature. It uses advanced NLP to automatically extract mentioned chemicals, genes, diseases, cell lines, species, variants, and biological relationships.
 *   **Gene Deep-Dives (NCBI HGNC):** Retrieves official gene summaries, descriptions, and organism data directly from NCBI.
+*   **Reactions & Enzymes (KEGG Offline TSVs):** Lightning-fast local parsing of KEGG Reactions, Enzymes, Modules, and Orthology (KO) using offline `.tsv` databases. Features smart filtering to isolate specific substrates and products without API rate limits.
 
 ## Setup Instructions
 
@@ -83,3 +84,9 @@ Copy and paste these queries into the Bioweaver chat interface to see its full p
 18. *"Search the literature for 'BRAF Melanoma'. Extract the specific Cell Lines they used for their experiments and the Species studied."*
 19. *"Find recent papers on 'Carbamazepine Epilepsy'. Look for any explicitly extracted NLP Relationships between the chemicals and the diseases."*
 20. *"Look up 'CRISPR Cas9 Duchenne Muscular Dystrophy'. Tell me exactly which Species were mentioned in the papers and what specific variants they targeted."*
+
+### Reaction & Enzyme Queries
+21. *"Find all reactions where pyruvate is a product."*
+22. *"What are the substrates and products of reaction R00224?"*
+23. *"List enzymes that involve ATP as a substrate."*
+24. *"What is a KEGG module and how is it related to glycolysis?"*

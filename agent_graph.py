@@ -4,6 +4,8 @@ import os
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
+from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from langgraph.prebuilt import create_react_agent
 
 from kegg_client import (
@@ -20,10 +22,20 @@ from kegg_client import (
     search_kegg_compound,
     get_kegg_compound_details,
     get_reactome_pathway_description,
+    search_kegg_ko,
+    get_kegg_ko_details,
+    search_kegg_enzyme,
+    get_kegg_enzyme_details,
+    search_kegg_module,
+    get_kegg_module_details,
+    search_kegg_reaction,
+    get_kegg_reaction_details,
 )
+
 from ncbi_client import get_ncbi_gene_id, get_ncbi_gene_summary
 from clinvar_client import fetch_top_mutations
 from pubtator_client import search_pubtator_papers, fetch_pubtator_annotations
+from hf_router_client import route_clinvar_query
 from wiki_client import fetch_wikipedia_summary
 from reactome_client import get_reactome_pathway_data
 
@@ -54,7 +66,6 @@ def paginate_results(data_list, page, chunk_size=200):
         "data": chunk,
         "current_page": page,
         "has_more": has_more,
-        "next_page_to_call": page + 1 if has_more else None,
         "total_items": len(data_list)
     }
 
@@ -64,24 +75,26 @@ def paginate_results(data_list, page, chunk_size=200):
 # decide when to call it on its own, based on the user's query.
 
 @tool
-def tool_search_kegg_pathway(pathway_name: str, fields_needed: list = None, page: int = 1, database_preference: str = "both"):
+def tool_search_kegg_pathway(pathway_name: str, fields_needed: list = None, page: int = 1, database_preference: str = "kegg", just_list: bool = False):
     """
-    Searches for a biological pathway by name.
-    Returns ONLY the fields specified in fields_needed to keep the response focused.
+    Searches biological pathway by name.
+    CRITICAL: If the user only asks for a 'list' of pathways, you MUST set just_list=True.
+    Returns ONLY the fields specified in fields_needed.
     Available fields: 'genes', 'compounds', 'drugs', 'modules', 'related_pathways', 'description'.
-    Genes and compounds are fetched from both KEGG and Reactome simultaneously and merged.
-    IMPORTANT: The returned genes and compounds have [Source: KEGG] and/or [Source: Reactome] tags. You MUST preserve and display these exact tags to the user so they know where the data came from!
-    Use this when the user asks about a pathway (e.g. glycolysis, TCA cycle, etc.)
-    Always specify only the fields_needed that are relevant to the user's question.
-    database_preference: Optional. Can be 'both', 'kegg', or 'reactome'. If the user asks for data from a specific database, restrict the search using this.
-    If the result contains 'has_more: True', you MUST call this tool again with page = next_page_to_call.
+    IMPORTANT: By default, this ONLY searches KEGG to ensure 100% accurate results without hallucinated fuzzy matches. 
+    DO NOT set database_preference to 'both' or 'reactome' UNLESS the user EXPLICITLY asks for Reactome related data!
+    Always specify only the fields_needed that are relevant to the user's question. If the user asks for general information (e.g., 'tell me about X'), ONLY fetch the 'description' field. Do not fetch 'genes' or 'compounds' unless explicitly requested.
+    If the result contains 'has_more: True', DO NOT automatically fetch the next page unless the user explicitly asks for more results.
     """
     # pathway_name: The pathway name to search for (e.g. "glycolysis").
     # fields_needed: A list of strings specifying which data fields to return.
     #                Example: ["genes", "drugs"] if user asks about genes and drugs only.
     # page: The page number for paginated gene/compound lists (default is 1).
-    print(f"\n[Tool: search_kegg_pathway] Searching for: '{pathway_name}', Fields: {fields_needed}, DB: {database_preference}, Page: {page}")
-    
+    print(f"\n[Tool: search_kegg_pathway] Searching for: '{pathway_name}', Fields: {fields_needed}, DB: {database_preference}, Page: {page}, Just List: {just_list}")
+
+    if just_list:
+        fields_needed = []
+        
     # Helper for smart deduplication and tagging
     def merge_and_tag(kegg_list, reactome_list):
         merged = {}
@@ -125,8 +138,12 @@ def tool_search_kegg_pathway(pathway_name: str, fields_needed: list = None, page
     result = {
         "all_matched_pathways": [m["name"] for m in matches],
         "total_pathways_found": len(matches),
-        "pathways_deep_dived": min(len(matches), MAX_PATHWAY_MATCHES),
     }
+
+    if just_list:
+        return result
+        
+    result["pathways_deep_dived"] = min(len(matches), MAX_PATHWAY_MATCHES)
 
     # Aggregate fields across all matches up to the MAX_PATHWAY_MATCHES threshold
     org_code = get_kegg_organism_code("human")
@@ -254,7 +271,7 @@ def tool_search_kegg_disease(disease_name: str, page: int = 1):
     Returns the disease ID, name, a Wikipedia overview, and the list of
     linked genes and pathways (for humans).
     Use this when the user asks about a disease and wants its linked genes or pathways.
-    If the result contains 'has_more: True', you MUST call this tool again with page = next_page_to_call.
+    If the result contains 'has_more: True', DO NOT automatically call this tool again unless the user specifically asked you to fetch ALL results.
     """
     # disease_name: The disease name to search for (e.g. "Alzheimer disease").
     # page: The page number for paginated results (default is 1).
@@ -272,19 +289,18 @@ def tool_search_kegg_disease(disease_name: str, page: int = 1):
     results = []
     # If the AI asks for page 1, fetch 1-20, page 2 fetches 21-40, etc.
     # To save API calls, we ONLY process the chunk that is being paginated.
-    chunk_size = 5 # Process 5 diseases per page so API isn't overloaded
+    # Hard cap: only process the first 5 results per call so the AI cannot loop endlessly
+    chunk_size = 5
     start = (page - 1) * chunk_size
     end = start + chunk_size
-    
     current_chunk = safe_matches[start:end]
-    has_more = end < len(safe_matches)
     
+    results = []
     for d_match in current_chunk:
         d_id = d_match["id"]
         wiki = fetch_wikipedia_summary(d_match["name"])
         linked = get_disease_linked_genes_and_pathways(d_id, "human")
         
-        # Don't truncate genes anymore! Give them all!
         raw_gene_ids = linked.get("gene_ids", [])
         translated_genes = translate_kegg_genes_bulk(raw_gene_ids)
         
@@ -298,10 +314,8 @@ def tool_search_kegg_disease(disease_name: str, page: int = 1):
         
     return {
         "total_diseases_found": len(safe_matches),
+        "showing_top": len(results),
         "data": results,
-        "current_page": page,
-        "has_more": has_more,
-        "next_page_to_call": page + 1 if has_more else None
     }
 
 
@@ -340,17 +354,43 @@ def tool_get_ncbi_gene_info(gene_symbol: str):
 
 
 @tool
-def tool_fetch_clinvar_mutations(gene_symbols: list):
+def tool_fetch_clinvar_mutations(raw_user_query="", default_targets=None):
     """
-    Fetches known pathogenic mutations for a list of human genes from ClinVar.
+    Fetches known pathogenic mutations for specific genes or RS IDs from ClinVar.
     The returned data includes the mutation Name, RS_ID, Type, Phenotypes (diseases), Origin, and Significance.
-    Use this when the user asks about mutations, variants, or genetic changes in genes.
+    Use this when the user asks about mutations, variants, or genetic changes.
+    
+    Parameters:
+    raw_user_query: The exact phrasing the user used (e.g., "What are the copy number losses for TP53?").
+    default_targets: A list of core gene symbols or RS IDs to use as a fallback if the router fails to extract them (e.g., ["LRRK2", "SNCA"] or ["121918399"]).
     """
-    # gene_symbols: A list of official human gene symbols (e.g. ["BRCA1", "TP53"]).
-    print(f"\n[Tool: fetch_clinvar_mutations] Fetching mutations for: {gene_symbols}")
-    mutations = fetch_top_mutations(gene_symbols)
+    if default_targets is None:
+        default_targets = []
+        
+    print(f"\n[Tool: fetch_clinvar_mutations] Routing query: '{raw_user_query}'")
+    hf_config = route_clinvar_query(raw_user_query, default_targets=default_targets)
+    
+    targets = hf_config.get("targets")
+    if not targets and default_targets:
+        targets = default_targets
+        
+    if not targets:
+        return {"error": "Could not identify target genes or RS IDs from the query."}
+        
+    target_type = hf_config.get("target_type", "gene")
+    mutation_type = hf_config.get("mutation_type", "single nucleotide variant")
+    fallback = hf_config.get("fallback_allowed", True)
+    
+    mutations = fetch_top_mutations(
+        targets,
+        target_type=target_type,
+        mutation_type=mutation_type,
+        fallback_allowed=fallback,
+        limit=5
+    )
+    
     if not mutations:
-        return {"result": f"No pathogenic mutations found in ClinVar for {gene_symbols}."}
+        return {"result": f"No pathogenic mutations found in ClinVar for {targets}."}
     return {"mutations_found": mutations}
 
 
@@ -361,7 +401,7 @@ def tool_search_pubmed(search_query: str, page: int = 1):
     Returns paper titles, authors, journal names, publication years, PMIDs, and advanced NLP annotations 
     including Genes, Chemicals, Diseases, Species, Cell Lines, Variants/Mutations, and structural Relations.
     Use this when the user asks for research papers, publications, or literature.
-    If the result contains 'has_more: True', you MUST call this tool again with page = next_page_to_call.
+    If the result contains 'has_more: True', DO NOT automatically fetch the next page unless the user explicitly asks for more results.
     """
     # search_query: The biomedical topic or terms to search for (e.g. "TP53 cancer mutations").
     # page: The page number for paginated results (default is 1).
@@ -391,18 +431,99 @@ def tool_search_pubmed(search_query: str, page: int = 1):
     return paginate_results(results, page)
 
 
+@tool
+def tool_search_ko(query: str, fetch_details: bool = False, filter_field: str = "", filter_value: str = ""):
+    """
+    Searches for a KEGG Orthology (KO) term.
+    Set fetch_details=True ONLY if query is a specific KO ID (e.g. 'K00001') to get full details.
+    Use filter_field (e.g. 'pathway') and filter_value to strictly filter the initial matches.
+    """
+    # query: The search term
+    # fetch_details: If True, fetches full details. Use ONLY for a specific ID.
+    # filter_field: Optional field name to filter by (e.g. 'pathway')
+    # filter_value: Optional value that must be present in the filter_field
+    print(f"\n[Tool: search_ko] Searching for: '{query}'")
+    matches = search_kegg_ko(query, filter_field, filter_value)
+    if not matches:
+        return {"error": f"No KO found for '{query}'"}
+    
+    is_id = query.upper().startswith("K") and len(query) > 1 and query[1].isdigit()
+    if fetch_details or is_id:
+        return get_kegg_ko_details(matches[0]["id"])
+    return {"matches": matches[:10]}
+
+@tool
+def tool_search_enzyme(query: str, fetch_details: bool = False, filter_field: str = "", filter_value: str = ""):
+    """
+    Searches for a KEGG Enzyme.
+    Set fetch_details=True ONLY if query is a specific EC number (e.g. '1.1.1.1') to get full details.
+    Use filter_field (e.g. 'products') and filter_value to strictly filter the initial matches.
+    """
+    # query: The search term
+    # fetch_details: If True, fetches full details. Use ONLY for a specific EC number.
+    # filter_field: Optional field name to filter by (e.g. 'products')
+    # filter_value: Optional value that must be present in the filter_field
+    print(f"\n[Tool: search_enzyme] Searching for: '{query}'")
+    matches = search_kegg_enzyme(query, filter_field, filter_value)
+    if not matches:
+        return {"error": f"No enzyme found for '{query}'"}
+    
+    is_id = query.replace(".", "").isdigit()
+    if fetch_details or is_id:
+        return get_kegg_enzyme_details(matches[0]["id"])
+    return {"matches": matches[:10]}
+
+@tool
+def tool_search_module(query: str, fetch_details: bool = False, filter_field: str = "", filter_value: str = ""):
+    """
+    Searches for a KEGG Module.
+    Set fetch_details=True ONLY if query is a specific Module ID (e.g. 'M00001') to get full details.
+    Use filter_field and filter_value to strictly filter the initial matches.
+    """
+    # query: The search term
+    # fetch_details: If True, fetches full details. Use ONLY for a specific Module ID.
+    # filter_field: Optional field name to filter by
+    # filter_value: Optional value that must be present in the filter_field
+    print(f"\n[Tool: search_module] Searching for: '{query}'")
+    matches = search_kegg_module(query, filter_field, filter_value)
+    if not matches:
+        return {"error": f"No module found for '{query}'"}
+    
+    is_id = query.upper().startswith("M") and len(query) > 1 and query[1].isdigit()
+    if fetch_details or is_id:
+        return get_kegg_module_details(matches[0]["id"])
+    return {"matches": matches[:10]}
+
+@tool
+def tool_search_reaction(query: str, fetch_details: bool = False, filter_field: str = "", filter_value: str = ""):
+    """
+    Searches for a KEGG Reaction.
+    Set fetch_details=True ONLY if query is a specific Reaction ID (e.g. 'R00001') to get full details.
+    Use filter_field (e.g. 'products') and filter_value to strictly filter the initial matches.
+    """
+    # query: The search term
+    # fetch_details: If True, fetches full details. Use ONLY for a specific Reaction ID.
+    # filter_field: Optional field name to filter by (e.g. 'products')
+    # filter_value: Optional value that must be present in the filter_field
+    print(f"\n[Tool: search_reaction] Searching for: '{query}'")
+    matches = search_kegg_reaction(query, filter_field, filter_value)
+    if not matches:
+        return {"error": f"No reaction found for '{query}'"}
+    
+    is_id = query.upper().startswith("R") and len(query) > 1 and query[1].isdigit()
+    if fetch_details or is_id:
+        return get_kegg_reaction_details(matches[0]["id"])
+    return {"matches": matches[:10]}
+
+
 # ---- AGENT BUILD FUNCTION ---- #
 
 def build_ncbi_kegg_graph():
     # Builds and returns the dynamic ReAct tool-calling agent.
     # The LLM will decide which tools to call and in what order based on the user query.
 
-    api = os.getenv("LLM_API")
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-flash-lite-latest",
-        temperature=0.2,
-        api_key=api
-    )
+    from ai_model_wrapper import get_llm
+    llm = get_llm()
 
     tools = [
         tool_search_kegg_pathway,
@@ -411,37 +532,40 @@ def build_ncbi_kegg_graph():
         tool_fetch_clinvar_mutations,
         tool_search_pubmed,
         tool_search_compound,
+        tool_search_ko,
+        tool_search_enzyme,
+        tool_search_module,
+        tool_search_reaction,
     ]
 
     system_prompt = (
-        "You are an expert biomedical research assistant with access to NCBI, KEGG, ClinVar, and PubMed databases via tools. "
-        "CRITICAL RULE 1: If the user asks a question that is CLEARLY NOT related to biology, medicine, genetics, pathways, or diseases "
-        "(for example, asking about actors, movies, general knowledge, or programming), you MUST refuse to answer. "
-        "Reply exactly with: 'I am a specialized biomedical agent. I can only answer questions related to biology, genetics, diseases, and medical research.' "
-        "Do NOT answer the off-topic question under any circumstances. "
-        "HOWEVER, if the query contains ANY biological terms, abbreviations, or references (like 'glycolysis', 'CO IDs', 'kegg', 'TP53', 'Human Kegg ID'), you MUST accept it as a valid biomedical query. Do NOT falsely reject it. "
-        "CRITICAL RULE 2: Do NOT use LaTeX math formatting under any circumstances (e.g., absolutely no $\\text{CO}_2$ or $\\text{NADH}$). Use plain text like CO2 and NADH. "
-        "When the user asks a valid biomedical question, analyze it carefully and call ONLY the tools that are necessary to answer it. "
-        "CRITICAL RULE 3: You MUST base your answers SOLELY on the information returned by your tools. Do NOT answer questions using your pre-trained internal knowledge. If your tools do not return relevant information, you must reply that you cannot find the answer in the databases. "
-        "CRITICAL RULE 4 (PAGINATION): Tools return data in chunks (pages). When a tool result contains 'has_more: True', "
-        "you are STRICTLY FORBIDDEN from making another tool call until you have output the Markdown text summarizing the current chunk! "
-        "You MUST first write out the data from the current chunk as a clean Markdown section. "
-        "Only AFTER you have printed the text for the current chunk are you allowed to call the SAME tool again with the 'next_page_to_call' number. "
-        "Keep looping and writing chunk by chunk until 'has_more' is False. Do NOT queue up multiple page calls at once. "
-        "Do NOT call tools that are unrelated to the question. "
-        "If the user asks for compounds in a pathway, use the pathway tool only. "
-        "If the user asks for mutations of genes found in a pathway, first call the pathway tool to get the genes, "
-        "then call the ClinVar tool for each relevant gene. "
-        "After gathering the data, synthesize a clean, structured Markdown answer. "
-        "Do NOT include introductory or concluding filler sentences. Jump straight into the facts. "
-        "Do NOT add a 'Suggestions for Further Reading' section unless the user specifically asks for papers. "
-        "Focus strictly on what the user asked. If they asked only for compounds, list only compounds. "
-        "If they asked only for mutations, list only mutations. "
-        "CRITICAL RULE 5: Do NOT arbitrarily truncate or summarize lists! If a tool returns a specific number of items (whether it is mutations, genes, compounds, pathways, or literature annotations), you MUST list EVERY SINGLE ITEM in your Markdown response. Do not drop items."
-    )
+    "You are a biomedical research assistant. Use tools to search NCBI, KEGG, ClinVar, and PubMed. "
+    "RULE 1 (OFF-TOPIC): Refuse queries not related to biology, medicine, genetics, or diseases. Reply exactly: "
+    "'I am a specialized agent. I can only answer questions related to biology, genetics, diseases, and medical research.' "
+    "Exception: accept any query containing biological terms (e.g., glycolysis, TP53, KEGG). "
+    "RULE 2: No LaTeX math. Use plain text"
+    "RULE 3 (KNOWLEDGE): For database queries, answer ONLY from tool output and never invent fields. However, if the user asks a general conceptual question (e.g. 'what are modules?', 'explain glycolysis'), use your knowledge and answer in crisp. "
+    "RULE 4 (SELECTION): "
+    "(A) Disease genes: call tool_search_kegg_disease ONCE. Do NOT loop tool_get_ncbi_gene_info. "
+    "(B) Pathway genes: call tool_search_kegg_pathway ONCE. Do NOT loop tool_get_ncbi_gene_info. "
+    "(C) tool_get_ncbi_gene_info: only for a single specific gene the user explicitly names. "
+    "(D) tool_search_pubmed: only if user explicitly asks for papers. "
+    "(E) tool_fetch_clinvar_mutations: only if user explicitly asks for mutations or variants. "
+    "(F) Do NOT auto-fetch additional pages. Return first page and stop. "
+    "RULE 5: Never truncate lists. Output every item returned by the tool. "
+    "RULE 6: Do NOT auto-fetch genes/compounds/drugs unless explicitly asked. For general pathway info, only fetch 'description'. For 'list' queries, set just_list=True and fields_needed=[]. "
+    "RULE 7: If tool returns '(Fallback Match)', explicitly warn the user. "
+    "RULE 8 (RELEVANCE): Discard irrelevant tool results silently. If data is a bad match, reply: 'I could not find relevant information.' Never dump irrelevant data. "
+    "RULE 9 (STRUCTURED DATA): For KO/Enzyme/Module/Reaction queries, read explicit fields (substrates, products, equation, genes, pathways). Output ONLY what the user asked for. Never dump all fields. Keep responses concise. "
+    "RULE 10 (SMART FILTERING): To find reactions, enzymes, or modules involving a specific compound (e.g. 'pyruvate'), ALWAYS provide the compound name in the 'query' parameter, and use 'filter_field' (e.g. 'products') and 'filter_value' (e.g. 'pyruvate') to filter it correctly. Never omit the 'query' parameter. "
+    "RULE 11 (LOCAL DATA PRIORITY): Reactions, Enzymes, Modules, and KOs are parsed perfectly from local offline files. NEVER manually loop through a huge list of reaction/enzyme IDs returned by a compound search. ALWAYS use the compound NAME directly in the specialized search tool (e.g., tool_search_reaction) to get the local data instantly. "
+    "Format answers as clean Markdown. No filler sentences. No 'Further Reading' unless asked. "
+)
+
 
     agent = create_react_agent(llm, tools, prompt=system_prompt)
-    return agent
+    # Hard cap: max 10 tool calls per query to prevent infinite looping
+    return agent.with_config({"recursion_limit": 10})
 
 
 # Detailed Script Workings:

@@ -1,100 +1,79 @@
 import sys
 sys.dont_write_bytecode = True
-import streamlit as st
-from agent_graph import build_ncbi_kegg_graph
-import sys
-import random
-
-# Must be the first Streamlit command
-st.set_page_config(page_title="Bioweaver", page_icon="", layout="wide")
-
-st.title("Bioweaver")
-st.markdown("Ask anything about genes, pathways, diseases, and mutations. The AI will dynamically query NCBI, KEGG, ClinVar, and PubMed to answer.")
 
 import os
-# Check if databases are installed
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from agent_graph import build_ncbi_kegg_graph
+from pydantic import BaseModel
+
+app = FastAPI(title="Bioweaver API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount the static directory for the HTML frontend
 base_dir = os.path.dirname(os.path.abspath(__file__))
-clinvar_path = os.path.join(base_dir, "Clinvar_files", "variant_summary.txt.gz")
+static_dir = os.path.join(base_dir, "static")
+if not os.path.exists(static_dir):
+    os.makedirs(static_dir)
 
-missing_dbs = []
-if not os.path.exists(clinvar_path):
-    missing_dbs.append("ClinVar")
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-if missing_dbs:
-    st.error(f"**Missing Databases Detected:** {', '.join(missing_dbs)}")
-    st.warning("Please run `python setup_dbs.py` in your terminal to download the required datasets before using the agent!")
-    st.stop() # Stops execution so the app doesn't crash later
+# Build the global agent instance
+agent = build_ncbi_kegg_graph()
 
-# Initialize chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+class ChatRequest(BaseModel):
+    message: str
 
-# Initialize the ReAct agent
-if "agent" not in st.session_state:
-    # We load the agent once and store it in session state for speed
-    st.session_state.agent = build_ncbi_kegg_graph()
+@app.get("/")
+async def serve_frontend():
+    return FileResponse(os.path.join(static_dir, "index.html"))
 
-# Display chat messages from history on app rerun
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+@app.post("/chat")
+async def chat_endpoint(req: ChatRequest):
+    """
+    Streams the AI's response chunks back to the client using Server-Sent Events (SSE).
+    """
+    prompt = req.message
 
-recommendations = [
-    "What are the mutations for BRCA1?",
-    "Genes involved in glycolysis",
-    "What drugs treat Alzheimer's disease?",
-    "Show me the TCA cycle pathway",
-    "Are there any mutations in the TP53 gene?"
-]
-
-ph = f"E.g., '{random.choice(recommendations)}'"
-
-# React to user input. We MUST provide a static 'key' here so Streamlit doesn't think 
-# we are creating a brand new input box every time the random placeholder changes!
-if prompt := st.chat_input(ph, key="main_chat_input"):
-    
-    # Display user message in chat message container
-    st.chat_message("user").markdown(prompt)
-    
-    # Add user message to chat history
-    st.session_state.messages.append({"role": "user", "content": prompt})
-
-    # Display assistant response in chat message container
-    with st.chat_message("assistant"):
-        with st.spinner("Analyzing ..."):
-            try:
-                # We will use an empty placeholder to write text continuously
-                placeholder = st.empty()
-                full_text = ""
-                
-                # Stream the agent's execution using 'updates' for perfectly stable chunking
-                for update in st.session_state.agent.stream(
-                    {"messages": [("user", prompt)]},
-                    stream_mode="updates"
-                ):
-                    if "agent" in update:
-                        messages = update["agent"].get("messages", [])
-                        if messages:
-                            # Get the completed message for this chunk
-                            last_msg = messages[-1]
+    async def stream_generator():
+        try:
+            for update in agent.stream(
+                {"messages": [("user", prompt)]},
+                stream_mode="updates"
+            ):
+                if "agent" in update:
+                    messages = update["agent"].get("messages", [])
+                    if messages:
+                        last_msg = messages[-1]
+                        if hasattr(last_msg, 'content') and last_msg.content:
+                            chunk_text = ""
+                            if isinstance(last_msg.content, str):
+                                chunk_text = last_msg.content
+                            elif isinstance(last_msg.content, list):
+                                chunk_text = "".join(block.get("text", "") for block in last_msg.content if isinstance(block, dict))
                             
-                            if hasattr(last_msg, 'content') and last_msg.content:
-                                chunk_text = ""
-                                if isinstance(last_msg.content, str):
-                                    chunk_text = last_msg.content
-                                elif isinstance(last_msg.content, list):
-                                    chunk_text = "".join(block.get("text", "") for block in last_msg.content if isinstance(block, dict))
-                                
-                                if chunk_text:
-                                    full_text += chunk_text + "\n\n"
-                                    # Update the UI instantly in real-time
-                                    placeholder.markdown(full_text)
-                
-                # Final render without the blinking cursor
-                placeholder.markdown(full_text)
-                
-                # Save to history
-                st.session_state.messages.append({"role": "assistant", "content": full_text})
-                
-            except Exception as e:
-                st.error(f"An error occurred: {e}")
+                            if chunk_text:
+                                import json
+                                # Use JSON encoding so newlines in markdown aren't broken by the SSE protocol
+                                payload = json.dumps({"chunk": chunk_text})
+                                yield f"data: {payload}\n\n"
+        except Exception as e:
+            import json
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            
+    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+if __name__ == "__main__":
+    import uvicorn
+    # How to run: python app.py or uv run uvicorn app:app --reload
+    print("Starting Bioweaver Backend Server...")
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
