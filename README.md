@@ -51,6 +51,7 @@ To install all dependencies and launch the application instantly, you can just r
 ```bash
 uv run python app.py
 ```
+*(This will start the backend server on **http://localhost:8000**)*
 
 Alternatively, to explicitly create a virtual environment and install from `requirements.txt` using `uv`:
 ```bash
@@ -59,6 +60,7 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 python app.py
 ```
+*(This will start the backend server on **http://localhost:8000**)*
 
 ### Alternative Installation (using pip)
 If you do not have `uv` installed, you can use standard Python tools:
