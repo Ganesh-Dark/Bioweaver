@@ -3,14 +3,10 @@ sys.dont_write_bytecode = True
 import os
 import requests
 import json
-import os
 from functools import lru_cache
 from hgnc_client import HGNC_CACHE, _load_hgnc_data
 import urllib.parse
 import re
-from functools import lru_cache
-
-sys.dont_write_bytecode = True
 
 KEGG_REST_BASE = "https://rest.kegg.jp"
 
@@ -619,55 +615,28 @@ def search_kegg_pathway(pathway_name):
         return []
 
 def get_reactome_pathway_description(pathway_name):
-    # pathway_name: The name of the pathway to search in Reactome
     print(f"Fetching description for Reactome Pathway: {pathway_name}")
-    url = f"https://reactome.org/ContentService/search/query?query={urllib.parse.quote(pathway_name)}&species=Homo%20sapiens"
+    import reactome_client
+    reactome_id = reactome_client.search_reactome_pathway_id(pathway_name)
     
+    if not reactome_id:
+        return ""
+        
+    # If ML model found ambiguity, return the options dict so agent_graph can catch it
+    if isinstance(reactome_id, dict) and "ambiguous_options" in reactome_id:
+        return reactome_id
+        
+    url = f"https://reactome.org/ContentService/data/query/{reactome_id}"
     try:
         response = requests.get(url, timeout=15)
         data = response.json()
-        
-        if "results" in data and len(data["results"]) > 0:
-            entries = data["results"][0].get("entries", [])
-            if entries:
-                # Robust core-word scoring algorithm
-                q_clean = re.sub(r'[^a-z0-9\s]', ' ', pathway_name.lower())
-                q_words = set(q_clean.split())
-                stop_words = {'pathway', 'signaling', 'cycle', 'metabolism', 'of', 'by', 'and', 'the', 'in', 'to', 'a'}
-                q_core = q_words - stop_words
-                if not q_core: 
-                    q_core = q_words
-                    
-                best_entry = None
-                best_score = float('inf')
-                
-                for entry in entries:
-                    if entry.get("exactType") == "Pathway" and entry.get("summation"):
-                        c_name = re.sub(r'<[^>]+>', '', entry.get("name", ""))
-                        c_clean = re.sub(r'[^a-z0-9\s]', ' ', c_name.lower())
-                        c_words = set(c_clean.split())
-                        c_core = c_words - stop_words
-                        if not c_core:
-                            c_core = c_words
-                            
-                        # Calculate Jaccard-like distance for core words
-                        intersection = q_core.intersection(c_core)
-                        if not intersection:
-                            continue # No core words match
-                            
-                        score = len(c_core) - len(intersection)
-                        if score < best_score:
-                            best_score = score
-                            best_entry = entry
-                            
-                if best_entry:
-                    summary = best_entry.get("summation")
-                    # Strip Reactome's weird HTML highlighting tags
-                    summary = re.sub(r'<[^>]+>', '', summary)
-                    return summary.strip()
+        if "summation" in data and len(data["summation"]) > 0:
+            summary = data["summation"][0].get("text", "")
+            summary = re.sub(r'<[^>]+>', '', summary)
+            return summary.strip()
         return ""
     except Exception as e:
-        print(f"Error fetching Reactome description: {e}")
+        print(f"Error fetching Reactome description for {reactome_id}: {e}")
         return ""
 
 def get_kegg_pathway_description(pathway_id):
@@ -1152,3 +1121,145 @@ def get_kegg_reaction_details(reaction_id):
     if not reaction_id.startswith("rn:"): reaction_id = f"rn:{reaction_id}"
     raw = get_generic_kegg_details(reaction_id)
     return format_kegg_details(raw, reaction_id)
+
+
+def get_pathway_linked_data(pathway_id, link_type):
+    """
+    Calls the KEGG Link API to get IDs linked to a pathway, then cross-references
+    them with local TSV files to return full details.
+    """
+    # pathway_id: A KEGG pathway ID such as map00010 or hsa00010.
+    # link_type: One of "rn" (reactions), "ec" (enzymes), or "cpd" (compounds).
+
+    # Normalise pathway_id: strip any "path:" prefix
+    clean_id = pathway_id.replace("path:", "").strip()
+
+    valid_types = ("rn", "ec", "cpd")
+    if link_type not in valid_types:
+        print(f"Invalid link_type '{link_type}'. Must be one of {valid_types}.")
+        return {"error": f"link_type must be one of {valid_types}"}
+
+    print(f"Calling KEGG Link API: /link/{link_type}/{clean_id}")
+    url = f"https://rest.kegg.jp/link/{link_type}/{clean_id}"
+    response = requests.get(url, timeout=15)
+
+    if response.status_code != 200 or not response.text.strip():
+        print(f"KEGG Link API returned no data for pathway: {clean_id}, type: {link_type}")
+        return {"pathway_id": clean_id, "link_type": link_type, "results": []}
+
+    # Parse the tab-delimited response to extract all IDs
+    # Each line is: path:mapXXXXX  rn:RXXXXX  (or ec:X.X.X.X or cpd:CXXXXX)
+    linked_ids = []
+    for line in response.text.strip().split("\n"):
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            # The second column is the linked ID (e.g. rn:R00299)
+            raw_id = parts[1].strip()
+            # Strip the prefix (rn:, ec:, cpd:) to get the bare ID
+            bare_id = raw_id.split(":")[-1]
+            linked_ids.append(bare_id)
+
+    print(f"Found {len(linked_ids)} linked IDs for {clean_id} (type={link_type}). Looking up local data...")
+
+    results = []
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if link_type == "rn":
+        # Cross-reference with local Reactions.tsv
+        file_path = os.path.join(base_dir, "Kegg_files", "Reactions.tsv")
+        if os.path.exists(file_path):
+            # Build a set for fast lookup
+            id_set = set(linked_ids)
+            
+            # Fetch EC mappings in bulk to prevent AI from having to loop!
+            ec_mapping = {}
+            try:
+                print("Fetching EC mappings for reactions...")
+                ec_rn_res = requests.get("https://rest.kegg.jp/link/ec/rn", timeout=10)
+                if ec_rn_res.status_code == 200:
+                    for line in ec_rn_res.text.strip().split("\n"):
+                        if "\t" in line:
+                            rn_part, ec_part = line.split("\t")
+                            rn_id = rn_part.replace("rn:", "")
+                            ec_id = ec_part.replace("ec:", "")
+                            if rn_id in id_set:
+                                ec_mapping.setdefault(rn_id, []).append(ec_id)
+            except Exception as e:
+                print("Failed to fetch EC mappings:", e)
+
+            with open(file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split("\t", 1)
+                    if len(parts) == 2 and parts[0] in id_set:
+                        rxn_id = parts[0]
+                        rest = parts[1]
+
+                        # Split name from equation
+                        equation = ""
+                        name_str = rest
+                        if "<=>" in rest or "=>" in rest:
+                            chunks = rest.split("; ")
+                            for i in range(len(chunks) - 1, -1, -1):
+                                if "<=>" in chunks[i] or "=>" in chunks[i]:
+                                    equation = chunks[i]
+                                    name_str = "; ".join(chunks[:i])
+                                    break
+
+                        results.append({
+                            "id": rxn_id,
+                            "name": name_str.split("; ")[0] if name_str else rxn_id,
+                            "equation": equation,
+                            "ec_numbers": ec_mapping.get(rxn_id, [])
+                        })
+        else:
+            print("Reactions.tsv not found locally. Cannot cross-reference.")
+
+    elif link_type == "ec":
+        # Cross-reference with local enzyme.tsv
+        file_path = os.path.join(base_dir, "Kegg_files", "enzyme.tsv")
+        if os.path.exists(file_path):
+            id_set = set(linked_ids)
+            with open(file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split("\t", 1)
+                    if len(parts) == 2 and parts[0] in id_set:
+                        # Take the first common name only (before the first semicolon)
+                        common_name = parts[1].split(";")[0].strip()
+                        results.append({
+                            "ec": parts[0],
+                            "name": common_name
+                        })
+        else:
+            print("enzyme.tsv not found locally. Cannot cross-reference.")
+
+    elif link_type == "cpd":
+        # Cross-reference with local kegg_compounds_synonyms.tsv
+        file_path = os.path.join(base_dir, "Kegg_files", "kegg_compounds_synonyms.tsv")
+        if os.path.exists(file_path):
+            id_set = set(linked_ids)
+            with open(file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split("\t", 1)
+                    if len(parts) == 2 and parts[0] in id_set:
+                        # Take the first listed synonym as the primary name
+                        primary_name = parts[1].split(";")[0].strip()
+                        results.append({
+                            "id": parts[0],
+                            "name": primary_name
+                        })
+        else:
+            print("kegg_compounds_synonyms.tsv not found locally. Cannot cross-reference.")
+
+    print(f"Returning {len(results)} locally matched results for pathway {clean_id}.")
+    return {
+        "pathway_id": clean_id,
+        "link_type": link_type,
+        "total_found": len(results),
+        "results": results
+    }
+
+# Detailed Script Workings (new addition):
+# get_pathway_linked_data fetches cross-reference IDs from the KEGG Link API
+# (/link/rn, /link/ec, /link/cpd) and then looks up the bare IDs in the local
+# Reactions.tsv, enzyme.tsv, or kegg_compounds_synonyms.tsv files respectively.
+# This avoids multiple slow API calls for individual entries.

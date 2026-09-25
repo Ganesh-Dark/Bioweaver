@@ -30,6 +30,7 @@ from kegg_client import (
     get_kegg_module_details,
     search_kegg_reaction,
     get_kegg_reaction_details,
+    get_pathway_linked_data,
 )
 
 from ncbi_client import get_ncbi_gene_id, get_ncbi_gene_summary
@@ -38,6 +39,7 @@ from pubtator_client import search_pubtator_papers, fetch_pubtator_annotations
 from hf_router_client import route_clinvar_query
 from wiki_client import fetch_wikipedia_summary
 from reactome_client import get_reactome_pathway_data
+import kegg_analytics as pa
 
 load_dotenv()
 
@@ -119,12 +121,19 @@ def tool_search_kegg_pathway(pathway_name: str, fields_needed: list = None, page
     if not fields_needed:
         fields_needed = []
 
-    matches = search_kegg_pathway(pathway_name)
+    if database_preference == "reactome":
+        matches = []
+    else:
+        matches = search_kegg_pathway(pathway_name)
+
     has_kegg = len(matches) > 0
 
-    if not has_kegg:
+    if database_preference == "reactome" or (not has_kegg and database_preference in ["both"]):
         # KEGG found nothing at all, try Reactome as a last resort
         reactome_data = get_reactome_pathway_data(pathway_name)
+        if isinstance(reactome_data, dict) and "ambiguous_options" in reactome_data:
+            return {"error": f"Reactome returned multiple possible matches for '{pathway_name}'. Please present these options to the user clearly, and ask them to reply with the exact Name or ID of the pathway they want:", "options": reactome_data["ambiguous_options"]}
+            
         if not reactome_data or not reactome_data.get("reactome_id"):
             return {"error": f"No pathway found for '{pathway_name}' in KEGG or Reactome."}
         return {
@@ -134,13 +143,20 @@ def tool_search_kegg_pathway(pathway_name: str, fields_needed: list = None, page
             "compounds": paginate_results(reactome_data.get("compounds", []), page),
         }
 
-    # List all matched pathway names for the AI to see
+    # List all matched pathway IDs and names for the AI to see
+    # Both ID and name are returned so the AI can use the ID in tool_get_pathway_linked_data
     result = {
-        "all_matched_pathways": [m["name"] for m in matches],
+        "all_matched_pathways": [{"id": m["id"], "name": m["name"]} for m in matches],
         "total_pathways_found": len(matches),
     }
 
     if just_list:
+        if database_preference in ["both", "reactome"]:
+            from reactome_client import get_reactome_pathways_list
+            reactome_matches = get_reactome_pathways_list(pathway_name)
+            if reactome_matches:
+                result["reactome_matched_pathways"] = reactome_matches
+                result["total_pathways_found"] += len(reactome_matches)
         return result
         
     result["pathways_deep_dived"] = min(len(matches), MAX_PATHWAY_MATCHES)
@@ -180,6 +196,8 @@ def tool_search_kegg_pathway(pathway_name: str, fields_needed: list = None, page
                 
             if database_preference in ["both", "reactome"]:
                 reactome_data = get_reactome_pathway_data(pname)
+                if isinstance(reactome_data, dict) and "ambiguous_options" in reactome_data:
+                    return {"error": f"Reactome returned multiple possible matches for '{pname}'. Please present these options to the user clearly, and ask them to reply with the exact Name or ID of the pathway they want:", "options": reactome_data["ambiguous_options"]}
                 combined_reactome_genes.extend(reactome_data.get("genes", []))
                 combined_reactome_compounds.extend(reactome_data.get("compounds", []))
 
@@ -195,6 +213,10 @@ def tool_search_kegg_pathway(pathway_name: str, fields_needed: list = None, page
             # Fetch Reactome if allowed and no description yet
             if not desc_text and database_preference in ["both", "reactome"]:
                 reactome_desc = get_reactome_pathway_description(pname)
+                
+                if isinstance(reactome_desc, dict) and "ambiguous_options" in reactome_desc:
+                    return {"error": f"Reactome returned multiple possible matches for '{pname}'. Please present these options to the user clearly, and ask them to reply with the exact Name or ID of the pathway they want:", "options": reactome_desc["ambiguous_options"]}
+                    
                 if reactome_desc:
                     desc_text = f"{reactome_desc} [Source: Reactome]"
             
@@ -516,6 +538,154 @@ def tool_search_reaction(query: str, fetch_details: bool = False, filter_field: 
     return {"matches": matches[:10]}
 
 
+@tool
+def tool_get_pathway_linked_data(pathway_id: str, link_type: str):
+    """
+    Use this tool when the user asks for ALL reactions, ALL enzymes (EC numbers), or ALL compounds
+    belonging to a specific pathway (e.g. 'list all reactions in glycolysis').
+    It calls the KEGG Link API to get the IDs and then cross-references them with local files for full details.
+    link_type must be one of:
+      'rn'  -> returns all Reactions (with equations) in the pathway
+      'ec'  -> returns all Enzyme EC numbers in the pathway
+      'cpd' -> returns all Compounds (metabolites) in the pathway
+    For pathway_id, use the KEGG map ID (e.g. 'map00010' for Glycolysis, 'map00020' for TCA cycle).
+    To find the correct map ID, first call tool_search_kegg_pathway with just_list=True.
+    """
+    # pathway_id: KEGG map ID (e.g. map00010). Use tool_search_kegg_pathway to find the right ID.
+    # link_type: 'rn' for reactions, 'ec' for enzymes, 'cpd' for compounds.
+    print(f"\n[Tool: get_pathway_linked_data] pathway='{pathway_id}', type='{link_type}'")
+    data = get_pathway_linked_data(pathway_id, link_type)
+    
+    # Safety truncation to prevent Groq API 8000 token limit crashes
+    if "results" in data and len(data["results"]) > 50:
+        data["results"] = data["results"][:50]
+        data["warning"] = "Results truncated to 50 items to prevent rate limits. The pathway has more items."
+        
+    return data
+
+
+# ---- PATHWAY ANALYTICS TOOLS (Zero LLM token processing) ---- #
+
+@tool
+def tool_pathway_summarize(pathway_id: str):
+    """
+    Returns a full statistical summary of a KEGG pathway: total reactions,
+    reversible vs irreversible count, coverage (how many reactions have an EC),
+    orphan (enzyme-unknown) reactions, EC class breakdown, and top 5 hub metabolites.
+    Use this when the user asks for a general overview or statistics of a pathway.
+    """
+    # pathway_id: KEGG map ID such as map00010 (Glycolysis) or map00020 (TCA cycle)
+    print(f"\n[Tool: pathway_summarize] pathway='{pathway_id}'")
+    return pa.summarize_pathway(pathway_id)
+
+
+@tool
+def tool_pathway_isozymes(pathway_id: str):
+    """
+    Finds reactions in a pathway that are catalyzed by MORE than one EC number.
+    These are called isozymes or redundant enzymes.
+    Use this when the user asks: 'Which ECs catalyze the same reaction?' or
+    'Which reactions have multiple enzymes?' in a given pathway.
+    """
+    # pathway_id: KEGG map ID such as map00010 (Glycolysis)
+    print(f"\n[Tool: pathway_isozymes] pathway='{pathway_id}'")
+    return pa.find_isozymes(pathway_id)
+
+
+@tool
+def tool_pathway_irreversible(pathway_id: str):
+    """
+    Returns only the irreversible reactions (one-directional, using =>) in a pathway.
+    Irreversible reactions are often rate-limiting or regulatory steps.
+    Use this when the user asks: 'Which reactions are irreversible?' or
+    'What are the rate-limiting steps in this pathway?'
+    """
+    # pathway_id: KEGG map ID such as map00010 (Glycolysis)
+    print(f"\n[Tool: pathway_irreversible] pathway='{pathway_id}'")
+    return pa.find_irreversible_reactions(pathway_id)
+
+
+@tool
+def tool_pathway_orphan_reactions(pathway_id: str):
+    """
+    Finds reactions in a pathway that have NO EC number assigned.
+    These are 'orphan' reactions where the chemistry is known but the enzyme
+    is not yet characterised.
+    Use this when the user asks: 'Which reactions lack an enzyme?' or
+    'Are there any uncharacterised steps in this pathway?'
+    """
+    # pathway_id: KEGG map ID such as map00010 (Glycolysis)
+    print(f"\n[Tool: pathway_orphan_reactions] pathway='{pathway_id}'")
+    return pa.find_orphan_reactions(pathway_id)
+
+
+@tool
+def tool_pathway_ec_class_breakdown(pathway_id: str):
+    """
+    Groups all EC numbers in the pathway by their top-level enzyme class
+    (Oxidoreductases, Transferases, Hydrolases, Lyases, Isomerases, Ligases, Translocases).
+    Use this when the user asks: 'What types of reactions dominate this pathway?' or
+    'Break down the enzymes in this pathway by class.'
+    """
+    # pathway_id: KEGG map ID such as map00010 (Glycolysis)
+    print(f"\n[Tool: pathway_ec_class_breakdown] pathway='{pathway_id}'")
+    return pa.get_ec_class_breakdown(pathway_id)
+
+
+@tool
+def tool_pathway_hub_metabolites(pathway_id: str, top_n: int = 10):
+    """
+    Finds the most frequently appearing compounds (hub metabolites) across all
+    reactions in the pathway. Hub metabolites like ATP, NAD+, or CoA appear
+    in many reactions and act as metabolic currencies.
+    Use this when the user asks: 'Which compounds are most central in this pathway?'
+    or 'What are the key metabolites here?'
+    """
+    # pathway_id: KEGG map ID such as map00010 (Glycolysis)
+    # top_n: Number of top metabolites to return (default 10)
+    print(f"\n[Tool: pathway_hub_metabolites] pathway='{pathway_id}', top={top_n}")
+    return pa.find_hub_metabolites(pathway_id, top_n)
+
+
+@tool
+def tool_pathway_compound_intersection(pathway_ids: list[str]):
+    """
+    Finds compounds shared between 2 or more KEGG pathways. Useful for finding
+    metabolic crossroads between pathways.
+    Use this when the user asks: 'Which compounds are shared between Glycolysis
+    and TCA cycle?' or 'What do these three pathways have in common?'
+    """
+    # pathway_ids: List of KEGG map IDs (e.g. ['map00010', 'map00020'])
+    print(f"\n[Tool: pathway_compound_intersection] {pathway_ids}")
+    return pa.find_pathway_compound_intersection(pathway_ids)
+
+
+@tool
+def tool_pathway_ec_intersection(pathway_ids: list[str]):
+    """
+    Finds enzymes (EC numbers) shared between 2 or more KEGG pathways. Shared enzymes
+    can be dual-function enzymes or regulatory branch points.
+    Use this when the user asks: 'Which enzymes are shared between these pathways?'
+    """
+    # pathway_ids: List of KEGG map IDs (e.g. ['map00010', 'map00020'])
+    print(f"\n[Tool: pathway_ec_intersection] {pathway_ids}")
+    return pa.find_pathway_ec_intersection(pathway_ids)
+
+
+@tool
+def tool_pathway_trace_compound(pathway_id: str, compound_name: str):
+    """
+    Traces a specific compound through a pathway. Shows exactly which reactions
+    consume it (as substrate) and which produce it (as product).
+    Use this when the user asks: 'Where is pyruvate consumed in Glycolysis?' or
+    'Which reactions produce ATP in this pathway?'
+    """
+    # pathway_id: KEGG map ID such as map00010 (Glycolysis)
+    # compound_name: Partial or full name of the compound (e.g. 'pyruvate', 'ATP')
+    print(f"\n[Tool: pathway_trace_compound] pathway='{pathway_id}', compound='{compound_name}'")
+    return pa.trace_compound_in_pathway(pathway_id, compound_name)
+
+
 # ---- AGENT BUILD FUNCTION ---- #
 
 def build_ncbi_kegg_graph():
@@ -536,6 +706,17 @@ def build_ncbi_kegg_graph():
         tool_search_enzyme,
         tool_search_module,
         tool_search_reaction,
+        tool_get_pathway_linked_data,
+        # Deterministic analytics tools (zero LLM token processing)
+        tool_pathway_summarize,
+        tool_pathway_isozymes,
+        tool_pathway_irreversible,
+        tool_pathway_orphan_reactions,
+        tool_pathway_ec_class_breakdown,
+        tool_pathway_hub_metabolites,
+        tool_pathway_compound_intersection,
+        tool_pathway_ec_intersection,
+        tool_pathway_trace_compound,
     ]
 
     system_prompt = (
@@ -559,6 +740,17 @@ def build_ncbi_kegg_graph():
     "RULE 9 (STRUCTURED DATA): For KO/Enzyme/Module/Reaction queries, read explicit fields (substrates, products, equation, genes, pathways). Output ONLY what the user asked for. Never dump all fields. Keep responses concise. "
     "RULE 10 (SMART FILTERING): To find reactions, enzymes, or modules involving a specific compound (e.g. 'pyruvate'), ALWAYS provide the compound name in the 'query' parameter, and use 'filter_field' (e.g. 'products') and 'filter_value' (e.g. 'pyruvate') to filter it correctly. Never omit the 'query' parameter. "
     "RULE 11 (LOCAL DATA PRIORITY): Reactions, Enzymes, Modules, and KOs are parsed perfectly from local offline files. NEVER manually loop through a huge list of reaction/enzyme IDs returned by a compound search. ALWAYS use the compound NAME directly in the specialized search tool (e.g., tool_search_reaction) to get the local data instantly. "
+    "RULE 12 (PATHWAY DATA): When the user asks for ALL reactions/enzymes/compounds in a pathway, use tool_get_pathway_linked_data (for KEGG). HOWEVER, if the user explicitly asks for Reactome data, use tool_search_kegg_pathway with database_preference='reactome' and fields_needed=['compounds'] (or genes). tool_get_pathway_linked_data does NOT support Reactome. Note: When responding with Reactome pathways, ALWAYS explicitly mention to the user that Reactome matches are resolved intelligently using a local TF-IDF Machine Learning model. "
+    "RULE 13 (ANALYTICS TOOLS PRIORITY): For analytical questions, ALWAYS prefer the dedicated analytics tools over raw data tools. "
+    "(A) 'same reaction / multiple ECs / isozymes' -> tool_pathway_isozymes. "
+    "(B) 'irreversible / rate-limiting steps' -> tool_pathway_irreversible. "
+    "(C) 'no enzyme / orphan reactions' -> tool_pathway_orphan_reactions. "
+    "(D) 'overview / statistics / summary of pathway' -> tool_pathway_summarize. "
+    "(E) 'enzyme type breakdown / what class of reactions' -> tool_pathway_ec_class_breakdown. "
+    "(F) 'most common compounds / hub metabolites / central metabolites' -> tool_pathway_hub_metabolites. "
+    "(G) 'shared compounds between two pathways' -> tool_pathway_compound_intersection. "
+    "(H) 'shared enzymes between two pathways' -> tool_pathway_ec_intersection. "
+    "(I) 'where is compound X / which reactions use compound X' -> tool_pathway_trace_compound. "
     "Format answers as clean Markdown. No filler sentences. No 'Further Reading' unless asked. "
 )
 

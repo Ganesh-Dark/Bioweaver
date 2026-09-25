@@ -20,6 +20,7 @@ dependencies = [
     "pandas>=3.0.5",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
+    "scikit-learn>=1.4.1.post1",
     "streamlit>=1.64.0",
     "uvicorn>=0.53.0",
 ]

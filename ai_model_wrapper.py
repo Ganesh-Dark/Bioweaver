@@ -30,7 +30,7 @@ def get_llm():
             huggingfacehub_api_token=hf_token,
             task="text-generation",
             temperature=0.2,
-            max_new_tokens=1024
+            max_new_tokens=4096
         )
         llm = ChatHuggingFace(llm=llm_endpoint)
         print("Backend: Loaded HUGGING FACE (openai/gpt-oss-20b)")
@@ -41,14 +41,14 @@ def get_llm():
             model="openai/gpt-oss-120b",
             temperature=0.2,
             api_key=groq_api,
-            max_retries=0, max_tokens=1024
+            max_retries=0, max_tokens=4096
         )
         print("Backend: Loaded GROQ (openai/gpt-oss-120b)")
     else:
         if not api_key:
             raise ValueError("LLM_API (Gemini key) is missing from .env")
         llm = ChatGoogleGenerativeAI(
-            model="gemini-3.6-flash",
+            model="gemini-flash-lite-latest",
             temperature=0.2,
             api_key=api_key,
             max_retries=0
