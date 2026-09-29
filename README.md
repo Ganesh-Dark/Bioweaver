@@ -33,7 +33,10 @@ Before running the application for the first time, you must download the ClinVar
 ```bash
 python setup_dbs.py
 ```
-*This will safely download the file directly from the NCBI FTP servers and place it in the `Clinvar_files/` directory.*
+*This will safely download the ClinVar file directly from the NCBI FTP servers and place it in your local directory.*
+
+> **Want the latest KEGG & HGNC data?** 
+> Even though KEGG and HGNC databases are already included, they update frequently. If you ever want to fetch the absolute latest, most recent versions directly from the official KEGG/HGNC APIs, simply delete the existing files in your data folder and run `python setup_dbs.py` again. The script will automatically detect they are missing and download the newest versions for you!
 
 **API Key Setup:**
 I strongly recommend to use Google free tier gemini API as this tool sometimes consumes too many tokens depending on context. You must provide your API key for that. There is also option to use Hugging face models or Groq if you prefer.
