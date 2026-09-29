@@ -33,5 +33,86 @@ def download_clinvar_database():
     except Exception as e:
         print(f"\nAn error occurred during download: {e}")
 
+def download_kegg_databases():
+    """
+    Downloads KEGG databases using the KEGG REST API and formats them.
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    kegg_dir = os.path.join(base_dir, "Kegg_files")
+    
+    if not os.path.exists(kegg_dir):
+        print(f"Creating directory: {kegg_dir}")
+        os.makedirs(kegg_dir)
+        
+    kegg_files = {
+        "enzyme.tsv": "enzyme",
+        "kegg_compounds_synonyms.tsv": "compound",
+        "kegg_diseases.tsv": "disease",
+        "kegg_organisms.tsv": "organism",
+        "ko.tsv": "ko",
+        "kegg_pathways.tsv": "pathway",
+        "module.tsv": "module",
+        "Reactions.tsv": "rn"
+    }
+    
+    for filename, endpoint in kegg_files.items():
+        destination_file = os.path.join(kegg_dir, filename)
+        if os.path.exists(destination_file):
+            print(f"The file {destination_file} already exists. Skipping download.")
+            continue
+            
+        url = f"https://rest.kegg.jp/list/{endpoint}"
+        print(f"Downloading KEGG {filename} from {url}...")
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=60) as response:
+                content = response.read().decode('utf-8')
+            
+            processed_lines = []
+            for line in content.split('\n'):
+                if not line.strip():
+                    continue
+                cols = line.split('\t')
+                #strip KEGG prefixes from the first column (e.g., 'path:map01100' -> 'map01100')
+                if len(cols) > 0 and ':' in cols[0]:
+                    cols[0] = cols[0].split(':', 1)[1]
+                processed_lines.append('\t'.join(cols))
+            
+            with open(destination_file, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(processed_lines) + '\n')
+            
+            print(f"Saved: {destination_file}")
+        except Exception as e:
+            print(f"Error downloading {filename}: {e}")
+
+def download_hgnc_database():
+    """
+    Downloads the complete HGNC dataset for gene symbol resolution.
+    """
+    hgnc_url = "https://storage.googleapis.com/public-download-files/hgnc/tsv/tsv/hgnc_complete_set.txt"
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    hgnc_dir = os.path.join(base_dir, "hgnc_files")
+    
+    if not os.path.exists(hgnc_dir):
+        print(f"Creating directory: {hgnc_dir}")
+        os.makedirs(hgnc_dir)
+        
+    destination_file = os.path.join(hgnc_dir, "hgnc_complete_set.txt")
+    
+    if os.path.exists(destination_file):
+        print(f"The file {destination_file} already exists. Skipping download.")
+        return
+
+    print(f"Starting download of HGNC database...")
+    print(f"URL: {hgnc_url}")
+    try:
+        urllib.request.urlretrieve(hgnc_url, destination_file)
+        print("Download completed")
+        print(f"Saved securely to: {destination_file}")
+    except Exception as e:
+        print(f"An error occurred during HGNC download: {e}")
+
 if __name__ == "__main__":
     download_clinvar_database()
+    download_kegg_databases()
+    download_hgnc_database()

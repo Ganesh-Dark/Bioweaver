@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from agent_graph import build_ncbi_kegg_graph
+from core.agent_graph import build_ncbi_kegg_graph
 from pydantic import BaseModel
 
 app = FastAPI(title="Bioweaver API")
@@ -48,6 +48,7 @@ async def chat_endpoint(req: ChatRequest):
         try:
             for update in agent.stream(
                 {"messages": [("user", prompt)]},
+                config={"recursion_limit": 150},
                 stream_mode="updates"
             ):
                 if "agent" in update:

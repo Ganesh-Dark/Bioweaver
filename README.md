@@ -36,7 +36,7 @@ python setup_dbs.py
 *This will safely download the file directly from the NCBI FTP servers and place it in the `Clinvar_files/` directory.*
 
 **API Key Setup:**
-This application is powered by a Google Gemini LLM. You must provide your API key for the AI to function.
+I strongly recommend to use Google free tier gemini API as this tool sometimes consumes too many tokens depending on context. You must provide your API key for that. There is also option to use Hugging face models or Groq if you prefer.
 1. Create a file named `.env` in the root directory.
 2. Add your API key exactly like this:
 ```env
