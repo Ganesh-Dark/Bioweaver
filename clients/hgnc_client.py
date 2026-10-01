@@ -5,7 +5,7 @@ import os
 
 # Global cache to hold the loaded HGNC data
 HGNC_CACHE = {}
-HGNC_FILE = os.path.join(os.path.dirname(__file__), "hgnc_files", "hgnc_complete_set.txt")
+HGNC_FILE = os.path.join(os.path.dirname(__file__), "..", "hgnc_files", "hgnc_complete_set.txt")
 
 def _load_hgnc_data():
     """

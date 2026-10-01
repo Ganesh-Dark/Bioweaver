@@ -19,7 +19,7 @@ REACTOME_DATA = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Path where the trained model is saved so we don't retrain every time
-PKL_PATH = os.path.join(BASE_DIR, "Reactome_files", "reactome_tfidf_model.pkl")
+PKL_PATH = os.path.join(BASE_DIR, "..", "Reactome_files", "reactome_tfidf_model.pkl")
 
 # Common cofactors, ions, and inorganic molecules to exclude from the metabolite list
 COFACTORS_STOPLIST = {
@@ -150,6 +150,23 @@ def get_reactome_pathways_list(pathway_name, top_k=10):
             return [{"id": possible_id, "name": match.iloc[0]["name"]}]
 
     clean_query = str(pathway_name).lower().split(" / ")[0].strip()
+    
+    # If the user queries something generic like 'all' or 'few', directly read from TSV and grab them!
+    if clean_query in ["all", "any", "some", "list", "random", "", "few"]:
+        results = []
+        tsv_path = os.path.join(BASE_DIR, "..", "Reactome_files", "reactome_reactions.tsv")
+        if os.path.exists(tsv_path):
+            df = pd.read_csv(tsv_path, sep='\t')
+            unique_pathways = df[['Pathway_ID', 'Pathway_Name']].drop_duplicates().head(top_k)
+            for _, row in unique_pathways.iterrows():
+                results.append({"id": row["Pathway_ID"], "name": row["Pathway_Name"]})
+        else:
+            # Fallback if TSV is missing
+            for idx in range(min(top_k, len(REACTOME_DATA))):
+                results.append({"id": REACTOME_DATA.iloc[idx]["id"], "name": REACTOME_DATA.iloc[idx]["name"]})
+        print(f"Reactome list search for '{pathway_name}': grabbed {len(results)} generic results.")
+        return results
+
     query_vec = ML_MODEL.transform([clean_query])
     sim_scores = cosine_similarity(query_vec, TFIDF_MATRIX).flatten()
     top_indices = np.argsort(sim_scores)[::-1][:top_k + 2]

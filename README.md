@@ -1,6 +1,6 @@
 # Bioweaver
 
-Bioweaver is a ReAct-powered biomedical AI agent. It acts as a central hub, dynamically querying and weaving together data from NCBI, KEGG, Reactome, ClinVar and PubTator. It allows users to ask natural language questions about genes, pathways, diseases, compounds, drugs, mutations and retrieve factual answers directly from official biological databases.
+Bioweaver is a ReAct-powered biomedical AI agent. It acts as a central hub, dynamically querying and weaving together data from NCBI, KEGG, Reactome, and ClinVar. It allows users to ask natural language questions about genes, pathways, diseases, compounds, drugs, mutations and retrieve factual answers directly from official biological databases.
 
 > **⚠️ IMPORTANT OVERVIEW DISCLAIMER ⚠️**
 > **Bioweaver is designed as an "Overview Agent." Because biological databases are incredibly vast (pathways can have thousands of genes and metabolites), the script is hardcoded to return TRIMMED and PAGINATED results to prevent the AI from crashing or running out of context memory.**
@@ -12,7 +12,6 @@ Bioweaver is equipped with tools to query specific biological domains:
 *   **Pathways & Metabolism (KEGG & Reactome):** Fetches comprehensive lists of genes, compounds, and drugs involved in specific biological pathways. It dynamically merges data from both databases and deduplicates the results.
 *   **Diseases & Modules (KEGG & Wikipedia):** Searches the KEGG Disease database to find genes linked to specific diseases, and automatically falls back to Wikipedia to provide human-readable overviews of rare diseases.
 *   **Clinical Variants (ClinVar):** Uses a local DuckDB engine to rapidly search the massive ClinVar database for known pathogenic mutations associated with specific genes.
-*   **Advanced Literature NLP (PubTator3):** Integrates with the official NCBI PubTator3 API to scan the latest PubMed literature. It uses advanced NLP to automatically extract mentioned chemicals, genes, diseases, cell lines, species, variants, and biological relationships.
 *   **Gene Deep-Dives (NCBI HGNC):** Retrieves official gene summaries, descriptions, and organism data directly from NCBI.
 *   **Reactions & Enzymes (KEGG Offline TSVs):** Local parsing of KEGG Reactions, Enzymes, Modules, and Orthology (KO) using offline `.tsv` databases to isolate specific substrates and products without API rate limits.
 *   **Local Pathway Analytics:** A custom Python module (`kegg_analytics.py`) that performs set operations and pathway analysis locally (e.g., finding isozymes, shared compounds, orphan reactions). This reduces token usage by preprocessing the datasets before passing context to the LLM.
@@ -102,12 +101,6 @@ Copy and paste these queries into the Bioweaver chat interface to see its full p
 15. *"Are there any known mutations for the APOE gene?"*
 16. *"List the pathogenic mutations for EGFR and tell me what phenotypes they cause."*
 
-### Literature & Advanced NLP (PubTator) Queries
-17. *"Look up literature on TP53 and Glioblastoma. Extract any FDA-approved drugs or chemicals mentioned."*
-18. *"Search the literature for 'BRAF Melanoma'. Extract the specific Cell Lines they used for their experiments and the Species studied."*
-19. *"Find recent papers on 'Carbamazepine Epilepsy'. Look for any explicitly extracted NLP Relationships between the chemicals and the diseases."*
-20. *"Look up 'CRISPR Cas9 Duchenne Muscular Dystrophy'. Tell me exactly which Species were mentioned in the papers and what specific variants they targeted."*
-
 ### Reaction & Enzyme Queries
 21. *"Find all reactions where pyruvate is a product."*
 22. *"What are the substrates and products of reaction R00224?"*
@@ -134,5 +127,5 @@ Copy and paste these queries into the Bioweaver chat interface to see its full p
 This project queries and processes data from several public biological databases. Please refer to their respective licenses and terms of use if you plan to use Bioweaver for commercial purposes:
 
 *   **KEGG (Kyoto Encyclopedia of Genes and Genomes):** Pathway, disease, reaction, and enzyme data are sourced from KEGG. KEGG data is freely available for academic use, but commercial use requires a license. Please visit the [KEGG Legal & Copyright](https://www.kegg.jp/kegg/legal.html) page for full details.
-*   **NCBI / NLM:** Gene summaries, PubTator3 literature mining, and ClinVar variant data are sourced from the National Center for Biotechnology Information.
+*   **NCBI / NLM:** Gene summaries and ClinVar variant data are sourced from the National Center for Biotechnology Information.
 *   **Reactome:** Additional pathway data is integrated from the open-source Reactome knowledgebase. Note: Bioweaver uses a custom local Machine Learning model (TF-IDF vectorizer) to perform intelligent, fuzzy semantic matching of Reactome pathway names, preventing exact-character mismatch errors.

@@ -73,7 +73,7 @@ def get_kegg_pathways(kegg_gene_id):
     
     text = ""
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "Kegg_files", "kegg_pathways.tsv")
+    file_path = os.path.join(base_dir, "..", "Kegg_files", "kegg_pathways.tsv")
     if os.path.exists(file_path):
         print("Reading KEGG pathways from local file...")
         with open(file_path, "r", encoding="utf-8") as f:
@@ -133,7 +133,7 @@ def get_kegg_diseases(kegg_gene_id):
 
     text = ""
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "Kegg_files", "kegg_diseases.tsv")
+    file_path = os.path.join(base_dir, "..", "Kegg_files", "kegg_diseases.tsv")
     if os.path.exists(file_path):
         print("Reading KEGG diseases from local file...")
         with open(file_path, "r", encoding="utf-8") as f:
@@ -284,7 +284,7 @@ def search_kegg_disease(disease_name):
     print(f"Searching KEGG Disease database for: '{disease_name}'")
     disease_matches = []
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "Kegg_files", "kegg_diseases.tsv")
+    file_path = os.path.join(base_dir, "..", "Kegg_files", "kegg_diseases.tsv")
     if os.path.exists(file_path):
         print("Searching KEGG diseases from local file...")
         with open(file_path, "r", encoding="utf-8") as f:
@@ -377,7 +377,7 @@ def get_kegg_organism_code(organism_name):
 
     text = ""
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "Kegg_files", "kegg_organisms.tsv")
+    file_path = os.path.join(base_dir, "..", "Kegg_files", "kegg_organisms.tsv")
     
     if os.path.exists(file_path):
         print("Reading KEGG organisms from local file...")
@@ -546,7 +546,7 @@ def search_kegg_pathway(pathway_name):
         matches = []
         query_lower = query.lower()
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(base_dir, "Kegg_files", "Kegg_Pathways_All_Levels.tsv")
+        file_path = os.path.join(base_dir, "..", "Kegg_files", "Kegg_Pathways_All_Levels.tsv")
         
         if os.path.exists(file_path):
             try:
@@ -794,7 +794,7 @@ def get_compound_synonyms(query: str) -> list:
     query_lower = query.lower()
     synonyms = [query_lower]
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "Kegg_files", "kegg_compounds_synonyms.tsv")
+    file_path = os.path.join(base_dir, "..", "Kegg_files", "kegg_compounds_synonyms.tsv")
     
     if os.path.exists(file_path):
         try:
@@ -828,21 +828,31 @@ def search_local_kegg_tsv(query, filename):
         
     matches = []
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "Kegg_files", filename)
+    file_path = os.path.join(base_dir, "..", "Kegg_files", filename)
     
     if os.path.exists(file_path):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 for line in f:
-                    # Pad with spaces so 'glucose' won't match 'UDP-glucose' (dash, not space, precedes glucose)
-                    padded = " " + line.lower().replace("\t", " ") + " "
-                    if any(f" {syn} " in padded for syn in synonyms_to_check):
-                        parts = line.strip().split("\t", 1)
-                        if len(parts) >= 2:
-                            matches.append({"id": parts[0], "name": parts[1]})
+                    parts = line.strip().split("\t", 1)
+                    if len(parts) >= 2:
+                        row_id = parts[0]
+                        row_name = parts[1]
+                        
+                        # First look in first column (exact ID match)
+                        if row_id.lower() == query.lower():
+                            matches.append({"id": row_id, "name": row_name})
+                            continue
+                            
+                        # Then second column for other stuffs
+                        padded_name = " " + row_name.lower() + " "
+                        if any(f" {syn} " in padded_name for syn in synonyms_to_check):
+                            matches.append({"id": row_id, "name": row_name})
+                            
             if matches:
-                # Sort matches to prioritize exact starts with the original query
+                # Sort matches to prioritize exact ID match first
                 matches.sort(key=lambda x: (
+                    x["id"].lower() != query.lower(),
                     not x["name"].lower().startswith(query.lower()),
                     len(x["name"])
                 ))
@@ -1210,7 +1220,7 @@ def get_pathway_linked_data(pathway_id, link_type):
 
     if link_type == "rn":
         # Cross-reference with local Reactions.tsv
-        file_path = os.path.join(base_dir, "Kegg_files", "Reactions.tsv")
+        file_path = os.path.join(base_dir, "..", "Kegg_files", "Reactions.tsv")
         if os.path.exists(file_path):
             # Build a set for fast lookup
             id_set = set(linked_ids)
@@ -1260,7 +1270,7 @@ def get_pathway_linked_data(pathway_id, link_type):
 
     elif link_type == "ec":
         # Cross-reference with local enzyme.tsv
-        file_path = os.path.join(base_dir, "Kegg_files", "enzyme.tsv")
+        file_path = os.path.join(base_dir, "..", "Kegg_files", "enzyme.tsv")
         if os.path.exists(file_path):
             id_set = set(linked_ids)
             with open(file_path, "r", encoding="utf-8") as f:
@@ -1278,7 +1288,7 @@ def get_pathway_linked_data(pathway_id, link_type):
 
     elif link_type == "cpd":
         # Cross-reference with local kegg_compounds_synonyms.tsv
-        file_path = os.path.join(base_dir, "Kegg_files", "kegg_compounds_synonyms.tsv")
+        file_path = os.path.join(base_dir, "..", "Kegg_files", "kegg_compounds_synonyms.tsv")
         if os.path.exists(file_path):
             id_set = set(linked_ids)
             with open(file_path, "r", encoding="utf-8") as f:

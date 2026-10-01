@@ -23,7 +23,7 @@ def fetch_top_mutations(targets: list, target_type="gene", mutation_type="single
     
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(base_dir, "Clinvar_files", "variant_summary.txt.gz")
+    db_path = os.path.join(base_dir, "..", "Clinvar_files", "variant_summary.txt.gz")
     
     # Format the targets for SQL IN clause (e.g., 'LRRK2', 'SNCA')
     formatted_targets = ", ".join([f"'{t}'" for t in targets])

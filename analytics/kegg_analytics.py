@@ -5,7 +5,7 @@ import requests
 
 # Base directory of this script (used to locate local Kegg_files/)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-KEGG_FILES = os.path.join(BASE_DIR, "Kegg_files")
+KEGG_FILES = os.path.join(BASE_DIR, "..", "Kegg_files")
 
 
 # ─────────────────────────────────────────────

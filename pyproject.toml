@@ -1,7 +1,7 @@
 [project]
 name = "bioweaver-agent"
 version = "0.1.0"
-description = "Bioweaver: An intelligent, ReAct-powered biomedical agent that dynamically connects NCBI, KEGG, Reactome, ClinVar, and PubTator databases."
+description = "Bioweaver: An intelligent, ReAct-powered biomedical agent that dynamically connects NCBI, KEGG, Reactome, and ClinVar databases."
 readme = "README.md"
 authors = [
     { name = "Ganesh-sys-git", email = "sankarganesh16021999@gmail.com" }
