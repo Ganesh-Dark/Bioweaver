@@ -383,6 +383,9 @@ KEGG_CPD_TO_CHEBI_FILE = os.path.join(BASE_DIR, "..", "Kegg_files", "kegg_cpd_to
 KEGG_RN_TO_CPD_FILE = os.path.join(BASE_DIR, "..", "Kegg_files", "kegg_rn_to_cpd.tsv")
 RHEA_KEGG_FILE = os.path.join(BASE_DIR, "..", "Rhea_files", "rhea2kegg_reaction.tsv")
 RHEA_REACTOME_FILE = os.path.join(BASE_DIR, "..", "Rhea_files", "rhea2reactome.tsv")
+RHEA_UNIPROT_FILE = os.path.join(BASE_DIR, "..", "Rhea_files", "rhea2uniprot_sprot.tsv")
+RHEA_EC_FILE = os.path.join(BASE_DIR, "..", "Rhea_files", "rhea2ec.tsv")
+RHEA_ALL_FILE = os.path.join(BASE_DIR, "..", "Rhea_files", "rhea_all_reactions.tsv")
 
 # Module-level caches: each loaded once on first call
 _CHEBI_REACTOME_INDEX = None
@@ -390,6 +393,9 @@ _CPD_TO_CHEBI_MAP = None
 _RN_TO_CPD_MAP = None
 _RHEA_KEGG_MAP = None      # kegg_rn_id -> rhea_master_id
 _RHEA_REACTOME_MAP = None  # rhea_master_id -> set of bare reactome rxn ids
+_RHEA_UNIPROT_MAP = None   # rhea_master_id -> list of uniprot ids
+_RHEA_EC_MAP = None        # rhea_master_id -> list of ec numbers
+_RHEA_DETAILS_MAP = None   # rhea_master_id -> dict of details
 
 def _load_chebi_reactome_index():
     # Loads ChEBI2Reactome_PE_Reactions.txt into a fast dict: {chebi_id -> set of reaction_ids}
@@ -511,6 +517,144 @@ def _load_rhea_reactome_map():
     return mapping
 
 
+def _load_rhea_uniprot_map():
+    global _RHEA_UNIPROT_MAP
+    if _RHEA_UNIPROT_MAP is not None:
+        return _RHEA_UNIPROT_MAP
+    print("[Reactome Analytics] Loading Rhea->UniProt map (one-time)...")
+    mapping = {}
+    df = pd.read_csv(RHEA_UNIPROT_FILE, sep="\t")
+    for _, row in df.iterrows():
+        uniprot_id = str(row["ID"]).strip()
+        master_id = str(int(row["MASTER_ID"]))
+        mapping.setdefault(master_id, []).append(uniprot_id)
+    for k in mapping:
+        mapping[k] = list(set(mapping[k]))
+    _RHEA_UNIPROT_MAP = mapping
+    print(f"[Reactome Analytics] Rhea->UniProt map loaded: {len(mapping)} Rhea master entries.")
+    return mapping
+
+
+def _load_rhea_ec_map():
+    global _RHEA_EC_MAP
+    if _RHEA_EC_MAP is not None:
+        return _RHEA_EC_MAP
+    print("[Reactome Analytics] Loading Rhea->EC map (one-time)...")
+    mapping = {}
+    df = pd.read_csv(RHEA_EC_FILE, sep="\t")
+    for _, row in df.iterrows():
+        ec_id = str(row["ID"]).strip()
+        master_id = str(int(row["MASTER_ID"]))
+        mapping.setdefault(master_id, []).append(ec_id)
+    for k in mapping:
+        mapping[k] = list(set(mapping[k]))
+    _RHEA_EC_MAP = mapping
+    print(f"[Reactome Analytics] Rhea->EC map loaded: {len(mapping)} Rhea master entries.")
+    return mapping
+
+
+def _load_rhea_details_map():
+    global _RHEA_DETAILS_MAP
+    if _RHEA_DETAILS_MAP is not None:
+        return _RHEA_DETAILS_MAP
+    print("[Reactome Analytics] Loading Rhea details map (one-time)...")
+    mapping = {}
+    try:
+        df = pd.read_csv(RHEA_ALL_FILE, sep="\t").fillna("")
+        for _, row in df.iterrows():
+            rhea_raw = str(row.get("Reaction identifier", ""))
+            if not rhea_raw.startswith("RHEA:"):
+                continue
+            master_id = rhea_raw.replace("RHEA:", "").strip()
+            
+            mapping[master_id] = {
+                "equation": str(row.get("Equation", "")).strip(),
+                "chebi_identifiers": [c.strip() for c in str(row.get("ChEBI identifier", "")).split(";") if c.strip()],
+                "ec_numbers": [e.strip() for e in str(row.get("EC number", "")).split(";") if e.strip()]
+            }
+        _RHEA_DETAILS_MAP = mapping
+        print(f"[Reactome Analytics] Rhea details map loaded: {len(mapping)} Rhea master entries.")
+    except Exception as e:
+        print(f"[Reactome Analytics] Error loading Rhea details: {e}")
+        _RHEA_DETAILS_MAP = {}
+    return _RHEA_DETAILS_MAP
+
+
+def query_rhea_master_id(master_id: str):
+    """
+    Directly query a Rhea ID to get its equation, ChEBI participants, and database cross-references.
+    """
+    master_id = str(master_id).replace("RHEA:", "").strip()
+    
+    details_map = _load_rhea_details_map()
+    rhea_kegg_map = _load_rhea_kegg_map()
+    rhea_reactome_map = _load_rhea_reactome_map()
+    rhea_uniprot_map = _load_rhea_uniprot_map()
+    
+    details = details_map.get(master_id, {})
+    if not details:
+        return {"error": f"Rhea ID {master_id} not found."}
+        
+    kegg_ids = [k for k, v in rhea_kegg_map.items() if v == master_id]
+    
+    return {
+        "rhea_master_id": master_id,
+        "equation": details.get("equation", ""),
+        "chebi_identifiers": details.get("chebi_identifiers", []),
+        "ec_numbers": details.get("ec_numbers", []),
+        "kegg_reaction_ids": kegg_ids,
+        "reactome_reaction_ids": list(rhea_reactome_map.get(master_id, set())),
+        "uniprot_ids": rhea_uniprot_map.get(master_id, [])
+    }
+
+
+def get_pathway_rhea_mapping(kegg_pathway_id: str):
+    """
+    Fetches all KEGG reactions in a pathway and immediately maps them to their Rhea Master IDs and UniProt IDs.
+    """
+    print(f"\n[Reactome Analytics] Fetching Rhea mapping for pathway: {kegg_pathway_id}")
+    kegg_link_url = f"https://rest.kegg.jp/link/rn/{kegg_pathway_id}"
+    kegg_rn_ids = []
+    res = requests.get(kegg_link_url, timeout=15)
+    if res.status_code == 200 and res.text.strip():
+        for line in res.text.strip().split("\n"):
+            parts = line.split("\t")
+            if len(parts) == 2:
+                kegg_rn_ids.append(parts[1].replace("rn:", "").strip())
+                
+    if not kegg_rn_ids:
+        return {"error": f"No KEGG reactions found for {kegg_pathway_id}"}
+        
+    rhea_kegg_map = _load_rhea_kegg_map()
+    rhea_uniprot_map = _load_rhea_uniprot_map()
+    
+    results = []
+    unmapped = 0
+    for rn in kegg_rn_ids:
+        rhea_id = rhea_kegg_map.get(rn)
+        if rhea_id:
+            results.append({
+                "kegg_reaction": rn,
+                "rhea_master_id": rhea_id,
+                "uniprot_ids": rhea_uniprot_map.get(rhea_id, [])
+            })
+        else:
+            unmapped += 1
+            results.append({
+                "kegg_reaction": rn,
+                "rhea_master_id": None,
+                "uniprot_ids": []
+            })
+            
+    return {
+        "kegg_pathway_id": kegg_pathway_id,
+        "total_reactions": len(kegg_rn_ids),
+        "mapped_to_rhea": len(kegg_rn_ids) - unmapped,
+        "unmapped": unmapped,
+        "reactions": results
+    }
+
+
 def find_common_reactions_cross_db(kegg_pathway_id, reactome_pathway_name):
     # kegg_pathway_id: KEGG map ID like 'map00010' for Glycolysis
     # reactome_pathway_name: Exact string name of the Reactome pathway (e.g. 'Glycolysis')
@@ -532,6 +676,8 @@ def find_common_reactions_cross_db(kegg_pathway_id, reactome_pathway_name):
     # Step 2: Load Rhea bridge maps from local files (zero API calls)
     rhea_kegg_map = _load_rhea_kegg_map()          # kegg_rn_id -> rhea_master_id
     rhea_reactome_map = _load_rhea_reactome_map()  # rhea_master_id -> set of reactome_rxn_ids
+    rhea_uniprot_map = _load_rhea_uniprot_map()
+    rhea_ec_map = _load_rhea_ec_map()
 
     # Step 3: Get all Reactome reactions for the target pathway from local TSV (zero API calls)
     reactome_rxns = _get_pathway_reactions(reactome_pathway_name)
@@ -561,7 +707,9 @@ def find_common_reactions_cross_db(kegg_pathway_id, reactome_pathway_name):
                     "reactome_reaction_id": reactome_rxn_id,
                     "reactome_reaction_name": reactome_rxn_data.get("Reaction_Name", ""),
                     "reactome_equation": reactome_rxn_data.get("Equation", ""),
-                    "rhea_master_id": master_id
+                    "rhea_master_id": master_id,
+                    "uniprot_ids": rhea_uniprot_map.get(master_id, []),
+                    "ec_numbers": rhea_ec_map.get(master_id, [])
                 })
 
     print(f"[Reactome Analytics] Common reactions found: {len(common_reactions)}")

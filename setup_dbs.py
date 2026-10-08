@@ -161,7 +161,10 @@ def download_rhea_files():
     # Base URL for Rhea FTP server
     rhea_files = {
         "rhea2kegg_reaction.tsv": "https://ftp.expasy.org/databases/rhea/tsv/rhea2kegg_reaction.tsv",
-        "rhea2reactome.tsv": "https://ftp.expasy.org/databases/rhea/tsv/rhea2reactome.tsv"
+        "rhea2reactome.tsv": "https://ftp.expasy.org/databases/rhea/tsv/rhea2reactome.tsv",
+        "rhea2uniprot_sprot.tsv": "https://ftp.expasy.org/databases/rhea/tsv/rhea2uniprot_sprot.tsv",
+        "rhea2ec.tsv": "https://ftp.expasy.org/databases/rhea/tsv/rhea2ec.tsv",
+        "rhea-ec-iubmb.tsv": "https://ftp.expasy.org/databases/rhea/tsv/rhea-ec-iubmb.tsv"
     }
     base_dir = os.path.dirname(os.path.abspath(__file__))
     rhea_dir = os.path.join(base_dir, "Rhea_files")

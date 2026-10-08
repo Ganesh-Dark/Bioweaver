@@ -41,6 +41,7 @@ from clients.wiki_client import fetch_wikipedia_summary
 from clients.reactome_client import get_reactome_pathway_data
 from analytics import kegg_analytics as pa
 from analytics import reactome_analytics as ra
+from analytics import compound_resolver as cr
 
 load_dotenv()
 
@@ -821,6 +822,40 @@ def tool_compare_kegg_reactome_reactions(kegg_pathway_id: str, reactome_pathway_
     return ra.find_common_reactions_cross_db(kegg_pathway_id, reactome_pathway_name)
 
 
+@tool
+def tool_resolve_chemical(name: str, target_db: str = "all"):
+    """
+    Resolves a chemical name to its exact universal structure (InChIKey) and maps it 
+    across all major biological databases (KEGG, ChEBI, HMDB, DrugBank, PubChem).
+    Also returns a perfectly cleaned list of known synonyms.
+    target_db can be 'all', 'KEGG', 'ChEBI', 'HMDB', 'DrugBank', or 'PubChem'.
+    """
+    print(f"\n[Tool: resolve_chemical] Resolving '{name}' (target: {target_db})")
+    return cr.resolve_chemical(name, target_db=target_db)
+
+
+@tool
+def tool_query_rhea(rhea_id: str):
+    """
+    Directly query a Rhea Master ID to get its chemical equation, ChEBI identifiers, 
+    and cross-database mappings (KEGG, Reactome, UniProt, EC).
+    Input should be the numeric ID or 'RHEA:10000' format.
+    """
+    print(f"\n[Tool: query_rhea] Fetching details for Rhea ID: '{rhea_id}'")
+    return ra.query_rhea_master_id(rhea_id)
+
+
+@tool
+def tool_pathway_rhea_mapping(kegg_pathway_id: str):
+    """
+    Gets ALL reactions in a KEGG pathway and instantly maps them to their Rhea Master IDs and UniProt IDs.
+    IMPORTANT: Requires the KEGG map ID (e.g. 'map00010').
+    Use this when asked for "all Rhea IDs in a pathway" or "Rhea mapping for a pathway".
+    """
+    print(f"\n[Tool: pathway_rhea_mapping] KEGG='{kegg_pathway_id}'")
+    return ra.get_pathway_rhea_mapping(kegg_pathway_id)
+
+
 # ---- AGENT BUILD FUNCTION ---- #
 
 def build_ncbi_kegg_graph():
@@ -863,12 +898,15 @@ def build_ncbi_kegg_graph():
         tool_reactome_disease_reactions,
         tool_reactome_get_reactions,
         tool_compare_kegg_reactome_reactions,
+        tool_resolve_chemical,
+        tool_query_rhea,
+        tool_pathway_rhea_mapping,
     ]
 
     system_prompt = (
         "You are a biomedical research assistant. Use tools to search NCBI, KEGG, and ClinVar.\n\n"
         "### CRITICAL RULES:\n"
-        "1. **OFF-TOPIC**: Refuse queries not related to biology, medicine, genetics, or diseases. Reply exactly: 'I am a specialized agent. I can only answer questions related to biology, genetics, diseases, and medical research.' Exception: accept any query containing biological terms (e.g., glycolysis, TP53, KEGG).\n"
+        "1. **OFF-TOPIC**: You are a specialized agent. If a query is COMPLETELY unrelated to biology, chemistry, medicine, genetics, or diseases (e.g., asking for recipes or general chatter), refuse it. However, if the query contains ANY biochemical terms (like 'glycolysis', 'rhea', 'reactions', 'kegg'), you MUST process it and NEVER refuse it.\n"
         "2. **FORMATTING**: No LaTeX math. Use plain text.\n"
         "3. **KNOWLEDGE**: For database queries, answer ONLY from tool output and never invent fields. **CRITICAL: NEVER summarize, paraphrase, or rewrite descriptions retrieved from KEGG or Reactome (e.g., pathway or disease overviews). You MUST output the exact word-for-word text provided by the tool.** For general conceptual questions (e.g. 'what are modules?', 'explain glycolysis' without asking for database info), you may use your internal knowledge and answer concisely.\n"
         "4. **TOOL SELECTION & PAGINATION**:\n"
@@ -898,6 +936,9 @@ def build_ncbi_kegg_graph():
         "    - If asked for disease-specific reactions in a Reactome pathway, use `tool_reactome_disease_reactions`.\n"
         "    - If asked to list reactions in a Reactome pathway, or if the user simply provides a Reactome ID (e.g., 'R-HSA-9663891'), they want to see its basic reactions. Use `tool_reactome_get_reactions`. By default, only output basic info (ID and Equation). NEVER output descriptions, full genes, compartments, or summations unless explicitly asked.\n"
         "    - If asked for 'common reactions' / 'shared reactions' / 'reactions in both KEGG and Reactome' for any pathway -> ALWAYS use `tool_compare_kegg_reactome_reactions`. NEVER manually compare reaction lists yourself.\n"
+        "    - If asked to 'resolve', 'identify', find 'synonyms', or map a chemical across databases (e.g. 'what is the KEGG ID for pyruvate?'), ALWAYS use `tool_resolve_chemical`.\n"
+        "    - If asked about a Rhea ID (e.g., 'What is Rhea 10000?'), ALWAYS use `tool_query_rhea` to get its equation and cross-database mappings.\n"
+        "    - If asked to get Rhea IDs for an entire pathway (e.g. 'get all reactions from glycolysis and their rhea ids'), ALWAYS use `tool_pathway_rhea_mapping`.\n"
         "14. **SOURCES, REFERENCES & FALLBACKS**: You MUST explicitly and accurately state the exact source of ALL data you provide. If a tool uses a fallback source (like fetching a Wikipedia summary because a KEGG disease description was missing), you MUST explicitly state that the data is from Wikipedia (or the actual fallback source) and briefly explain WHY (e.g., 'Source: Wikipedia (Fallback used because KEGG lacked a description)'). Do NOT falsely claim data is from KEGG or Reactome if the tool pulled it from Wikipedia, HGNC, or another fallback. This strict citation rule applies to EVERYTHING: diseases, pathways, genes, compounds, etc. If explaining concepts purely from your own internal training data, explicitly state 'Source: Internal LLM Knowledge'.\n\n"
         "Format answers as clean Markdown. No filler sentences. No 'Further Reading' unless asked."
     )
