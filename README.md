@@ -14,12 +14,10 @@ Bioweaver is equipped with tools to query specific biological domains:
 *   **Clinical Variants (ClinVar):** Uses a local DuckDB engine to rapidly search the massive ClinVar database for known pathogenic mutations associated with specific genes.
 *   **Gene Deep-Dives (NCBI HGNC):** Retrieves official gene summaries, descriptions, and organism data directly from NCBI.
 *   **Reactions & Enzymes (KEGG Offline TSVs):** Local parsing of KEGG Reactions, Enzymes, Modules, and Orthology (KO) using offline `.tsv` databases to isolate specific substrates and products without API rate limits.
-*   **Local Pathway Analytics:** A custom Python module (`kegg_analytics.py`) that performs set operations and pathway analysis locally (e.g., finding isozymes, shared compounds, orphan reactions). This reduces token usage by preprocessing the datasets before passing context to the LLM.
+*   **Local Pathway Analytics:** Custom Python modules (`kegg_analytics.py` & `reactome_analytics.py`) that perform set operations and pathway analysis locally (e.g., finding isozymes, shared compounds, orphan reactions). This reduces token usage by preprocessing datasets.
+*   **Chemical Resolution:** A robust internal resolver using PubChem to map generic chemical names to universal InChIKeys and extract official KEGG, ChEBI, HMDB, and DrugBank identifiers.
+*   **Rhea Universal Reaction Mapping:** Seamless, offline cross-referencing between KEGG, Reactome, and Rhea. Instantly maps reactions to universal Rhea Master IDs, ChEBI participants, UniProt proteins, and EC numbers.
 *   **Query Routing:** The ReAct agent differentiates between database queries and general biological concepts. Standard conceptual questions (e.g., "What are the 10 steps of glycolysis?") are answered using the LLM's internal knowledge, saving API calls.
-
-## Upcomings!!
-
-*   **Reactome-based pathway analysis** is currently in development and will be released in upcoming commits!
 
 ## Setup Instructions
 
@@ -101,11 +99,15 @@ Copy and paste these queries into the Bioweaver chat interface to see its full p
 15. *"Are there any known mutations for the APOE gene?"*
 16. *"List the pathogenic mutations for EGFR and tell me what phenotypes they cause."*
 
-### Reaction & Enzyme Queries
-21. *"Find all reactions where pyruvate is a product."*
-22. *"What are the substrates and products of reaction R00224?"*
-23. *"List enzymes that involve ATP as a substrate."*
-24. *"What is a KEGG module and how is it related to glycolysis?"*
+### Reaction, Chemical & Cross-Database Queries
+17. *"Find all reactions where pyruvate is a product."*
+18. *"What are the substrates and products of reaction R00224?"*
+19. *"List enzymes that involve ATP as a substrate."*
+20. *"What is a KEGG module and how is it related to glycolysis?"*
+21. *"Resolve 'pyruvate' and give me all its database IDs."*
+22. *"Get all reactions from glycolysis and get their rhea ids."*
+23. *"What exactly is Rhea 10012?"*
+24. *"What are the common reactions between KEGG Glycolysis and Reactome Glycolysis?"*
 
 ### Advanced Pathway Analytics
 25. *"Which ECs catalyze the same reaction in the TCA cycle?"*
